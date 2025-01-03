@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use anyhow::Result;
 use dotenv::dotenv;
 use log::info;
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use tokio_postgres::Client;
+use std::fs;
 
 pub async fn download_crsp_monthly(
     config: &WrdsConfig,
@@ -178,6 +180,103 @@ pub async fn establish_connection(config: &WrdsConfig) -> Result<Client> {
     Ok(client)
 }
 
+pub async fn get_wrds_table(
+    client: &Client,
+    libname: &str,
+    memname: &str,
+    dir_path: &str,
+    custom_query: Option<&str>,
+    output_format: &str,
+) -> Result<()> {
+    fs::create_dir_all(dir_path).expect("Failed to create directory");
+
+    // Construct table name and SQL query
+    let table_name = format!("{}.{}", libname, memname);
+    let query = if let Some(custom_query) = custom_query {
+        custom_query.to_string() // Convert to owned `String` if custom query is provided
+    } else {
+        format!("SELECT * FROM {}", table_name) // Format a new query string
+    };
+
+    // Execute query
+    let rows = client.query(query.as_str(), &[]).await?;
+    if rows.is_empty() {
+        return Err(anyhow!("No data found for table: {}", table_name));
+    }
+
+    // Prepare DataFrame columns dynamically
+    let mut columns: Vec<Column> = vec![];
+    let schema = rows[0].columns();
+
+    for (idx, column) in schema.iter().enumerate() {
+        let col_name: PlSmallStr = column.name().into(); // Convert to `PlSmallStr`
+
+        let data_type = column.type_();
+        let current_series = match data_type.name() {
+            // if date, convert to Vec<chrono>
+            "date" => {
+                let col_data: Vec<Option<chrono::NaiveDate>> = rows.iter().map(|row| row.get(idx)).collect();
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+            "int2" => {
+            let col_data: Vec<Option<i16>> = rows.iter().map(|row| row.get(idx)).collect();
+            Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+            "int4" => {
+                let col_data: Vec<Option<i32>> = rows.iter().map(|row| row.get(idx)).collect();
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+            "float8" => {
+                let col_data: Vec<Option<f64>> = rows.iter().map(|row| row.get(idx)).collect();
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+            "text" | "varchar" => {
+                let col_data: Vec<Option<&str>> = rows.iter().map(|row| row.get(idx)).collect();
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+            "bool" => {
+                let col_data: Vec<Option<bool>> = rows.iter().map(|row| row.get(idx)).collect();
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+            _ => {
+                // For unsupported types, store as strings for now
+                let col_data: Vec<Option<String>> = rows
+                    .iter()
+                    .map(|row| row.get::<_, Option<String>>(idx))
+                    .collect();
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
+        };
+        columns.push(current_series);
+    }
+
+    // Build DataFrame
+    let mut df = DataFrame::new(columns)?;
+
+    // Save DataFrame to desired format
+    let output_file = format!(
+        "{}/{}_{}.{}",
+        dir_path,
+        libname.to_lowercase(),
+        memname.to_lowercase(),
+        output_format
+    );
+    match output_format {
+        "csv" => {
+            let mut file = std::fs::File::create(&output_file)?;
+            CsvWriter::new(&mut file).finish(&mut df)?;
+        }
+        "parquet" => {
+            let mut file = std::fs::File::create(&output_file)?;
+            ParquetWriter::new(&mut file).finish(&mut df)?;
+        }
+        _ => return Err(anyhow!("Unsupported output format: {}", output_format)),
+    }
+    info!("Saved table {} to {}", table_name, output_file);
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -199,5 +298,42 @@ mod test {
         let read_df = ParquetReader::new(&mut readFile).finish().unwrap();
 
         dbg!(&read_df);
+    }
+
+    #[tokio::test]
+    async fn test_get_crsp() {
+        let config = WrdsConfig::from_env();
+
+        // Download required tables
+        let tables = [
+            ("CRSP", "MSFHDR"), // 
+            // ("CRSP", "MSF"), // Main dataset
+            // ("CRSP", "MSEDELIST"), // delisting returns
+            // ("CRSP", "MSEEXCHDATES"),
+            // ("CRSP", "CCMXPF_LNKHIST"),
+            // ("CRSP", "STOCKNAMES"),
+        ];
+
+        let client = establish_connection(&config).await.unwrap();
+        // Specify output directory and format
+        let dir_path = "data/crsp";
+        let output_format = "parquet"; // or "csv"
+        for (libname, memname) in &tables {
+            get_wrds_table(&client, libname, memname, dir_path, None, output_format)
+                .await
+                .unwrap();
+
+            // Read the parquet file
+            let output_file = format!(
+                "{}/{}_{}.{}",
+                dir_path,
+                libname.to_lowercase(),
+                memname.to_lowercase(),
+                output_format
+            );
+            let mut read_file = std::fs::File::open(output_file).unwrap();
+            let read_df = ParquetReader::new(&mut read_file).finish().unwrap();
+            dbg!(&read_df);
+        }
     }
 }
