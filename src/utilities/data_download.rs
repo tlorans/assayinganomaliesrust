@@ -1,17 +1,16 @@
-use crate::database::sqlite::SqliteDB;
-use crate::wrds::connection::WrdsConfig;
-use crate::wrds::queries::establish_connection;
-use anyhow::{anyhow, Result};
-use indicatif::{ProgressBar, ProgressStyle};
-use log::{error, info};
+use anyhow::Result;
+use dotenv::dotenv;
+use log::info;
+use native_tls::TlsConnector;
 use polars::prelude::*;
+use postgres_native_tls::MakeTlsConnector;
 use std::collections::HashMap;
-use std::time::SystemTime;
-use tokio_postgres::{Client, Row};
+use std::env;
+use std::fs::File;
+use tokio_postgres::Client;
 
 pub async fn download_crsp_monthly(
     config: &WrdsConfig,
-    db: &SqliteDB,
     start_date: &str,
     end_date: &str,
 ) -> Result<DataFrame> {
@@ -73,92 +72,111 @@ pub async fn download_crsp_monthly(
 
     df = df
         .lazy()
-        .with_column((col("shrout") * col("altprc")).alias("mktcap"))
-        .with_column((col("mktcap") / lit(1_000_000)).alias("mktcap_millions"))
         .with_column(
-            when(col("mktcap_millions").eq(lit(0.0)))
+            when((col("shrout") * col("altprc") / lit(1_000_000)).eq(lit(0.0)))
                 .then(lit(f64::NAN))
-                .otherwise(col("mktcap_millions"))
-                .alias("mktcap_clean"),
+                .otherwise(col("shrout") * col("altprc") / lit(1_000_000))
+                .alias("mktcap"),
         )
-        .collect()?; // Materialize LazyFrame into a DataFrame
+        .collect()?;
+
+    // Additional transformations (exchange mapping, industry mapping)
+    df = map_industry(df)?;
 
     Ok(df)
 }
 
-// // Additional transformations (exchange mapping, industry mapping)
-// df = map_primary_exchange(df)?;
-// df = map_industry(df)?;
+fn map_industry(mut df: DataFrame) -> Result<DataFrame> {
+    let industry_map = |siccd: i32| -> &str {
+        match siccd {
+            1..=999 => "Agriculture",
+            1000..=1499 => "Mining",
+            1500..=1799 => "Construction",
+            2000..=3999 => "Manufacturing",
+            4000..=4899 => "Transportation",
+            4900..=4999 => "Utilities",
+            5000..=5199 => "Wholesale",
+            5200..=5999 => "Retail",
+            6000..=6799 => "Finance",
+            7000..=8999 => "Services",
+            9000..=9999 => "Public",
+            _ => "Missing",
+        }
+    };
 
-// fn map_primary_exchange(mut df: DataFrame) -> Result<DataFrame> {
-//     let exchange_map: HashMap<&str, &str> =
-//         HashMap::from([("N", "NYSE"), ("A", "AMEX"), ("Q", "NASDAQ")]);
+    let industry: Vec<&str> = df
+        .column("siccd")?
+        .i32()?
+        .into_iter()
+        .map(|opt| opt.map(industry_map).unwrap_or("Missing"))
+        .collect();
 
-//     let exchange: Vec<String> = df
-//         .column("primaryexch")?
-//         .utf8()?
-//         .into_iter()
-//         .map(|opt| {
-//             opt.and_then(|exch| exchange_map.get(exch).map(|&v| v.to_string()))
-//                 .unwrap_or_else(|| "Other".to_string())
-//         })
-//         .collect();
+    df.with_column(Series::new("industry".into(), &industry))?;
+    Ok(df)
+}
 
-//     df.with_column(Series::new("exchange".into(), &exchange))?;
-//     Ok(df)
-// }
+#[derive(Debug)]
+pub struct WrdsConfig {
+    pub user: String,
+    pub password: String,
+    pub host: String,
+    pub port: u16,
+    pub dbname: String,
+}
 
-// fn map_industry(mut df: DataFrame) -> Result<DataFrame> {
-//     let industry_map = |siccd: i32| -> &str {
-//         match siccd {
-//             1..=999 => "Agriculture",
-//             1000..=1499 => "Mining",
-//             1500..=1799 => "Construction",
-//             2000..=3999 => "Manufacturing",
-//             4000..=4899 => "Transportation",
-//             4900..=4999 => "Utilities",
-//             5000..=5199 => "Wholesale",
-//             5200..=5999 => "Retail",
-//             6000..=6799 => "Finance",
-//             7000..=8999 => "Services",
-//             9000..=9999 => "Public",
-//             _ => "Missing",
-//         }
-//     };
+impl WrdsConfig {
+    pub fn from_env() -> Self {
+        dotenv().ok();
+        WrdsConfig {
+            user: env::var("WRDS_USER").expect("WRDS_USER must be set"),
+            password: env::var("WRDS_PASSWORD").expect("WRDS_PASSWORD must be set"),
+            host: env::var("WRDS_HOST")
+                .unwrap_or_else(|_| "wrds-pgdata.wharton.upenn.edu".to_string()),
+            port: env::var("WRDS_PORT")
+                .unwrap_or_else(|_| "9737".to_string())
+                .parse()
+                .expect("WRDS_PORT must be a number"),
+            dbname: env::var("WRDS_DBNAME").unwrap_or_else(|_| "wrds".to_string()),
+        }
+    }
 
-//     let industry: Vec<&str> = df
-//         .column("siccd")?
-//         .i32()?
-//         .into_iter()
-//         .map(|opt| opt.map(industry_map).unwrap_or("Missing"))
-//         .collect();
+    pub fn connection_string(&self) -> String {
+        format!(
+            "host={} port={} user={} password={} dbname={}",
+            self.host, self.port, self.user, self.password, self.dbname
+        )
+    }
+}
 
-//     df.with_column(Series::new("industry".into(), &industry))?;
-//     Ok(df)
-// }
+/// Establishes a connection to the WRDS PostgreSQL database using the provided configuration.
+/// Utilizes SSL/TLS for secure communication.
+///
+/// # Arguments
+///
+/// * `config` - A reference to `WrdsConfig` containing connection details.
+///
+/// # Returns
+///
+/// * `Result<Client>` - Ok containing the PostgreSQL client or an error.
+pub async fn establish_connection(config: &WrdsConfig) -> Result<Client> {
+    // Create a TLS connector
+    let native_tls_connector = TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .build()?;
+    let tls_connector = MakeTlsConnector::new(native_tls_connector);
 
-// Store DataFrame into SQLite
-// store_dataframe_to_sqlite(&df, db, "crsp_monthly").await?;
+    let connection_string = config.connection_string();
+    let (client, connection) = tokio_postgres::connect(&connection_string, tls_connector).await?;
 
-// async fn store_dataframe_to_sqlite(df: &DataFrame, db: &SqliteDB, table_name: &str) -> Result<()> {
-//     // Convert Polars DataFrame to CSV in-memory
-//     let csv_data = df.to_csv()?;
-//     let mut stmt = db.conn.prepare(&format!("CREATE TABLE IF NOT EXISTS {} (permno INTEGER, date TEXT, ret REAL, shrout REAL, altprc REAL, primaryexch TEXT, siccd INTEGER, mktcap REAL, exchange TEXT, industry TEXT)", table_name))?;
-//     stmt.execute([])?;
+    // Spawn the connection to run in the background
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("connection error: {}", e);
+        }
+    });
 
-//     // Insert data
-//     for row in df.iter_rows() {
-//         db.conn.execute(
-//             &format!(
-//                 "INSERT INTO {} (permno, date, ret, shrout, altprc, primaryexch, siccd, mktcap, exchange, industry) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-//                 table_name
-//             ),
-//             row.as_slice(),
-//         )?;
-//     }
-
-//     Ok(())
-// }
+    Ok(client)
+}
 
 #[cfg(test)]
 mod test {
@@ -167,12 +185,19 @@ mod test {
     #[tokio::test]
     async fn test_download_crsp_monthly() {
         let config = WrdsConfig::from_env();
-        let db = SqliteDB::new(":memory:").unwrap();
         let start_date = "2020-01-01";
         let end_date = "2020-01-31";
-        let df: DataFrame = download_crsp_monthly(&config, &db, start_date, end_date)
+        let mut df: DataFrame = download_crsp_monthly(&config, start_date, end_date)
             .await
             .unwrap();
-        dbg!(&df);
+
+        let mut file = std::fs::File::create("test.parquet").unwrap();
+        ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+
+        // Read the parquet file
+        let mut readFile = std::fs::File::open("test.parquet").unwrap();
+        let read_df = ParquetReader::new(&mut readFile).finish().unwrap();
+
+        dbg!(&read_df);
     }
 }
