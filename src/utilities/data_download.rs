@@ -10,6 +10,9 @@ use std::env;
 use std::fs;
 use std::fs::File;
 use tokio_postgres::Client;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+use tokio_postgres::Row;
 
 #[derive(Debug)]
 pub struct WrdsConfig {
@@ -107,6 +110,10 @@ pub async fn get_wrds_table(
 
         let data_type = column.type_();
         let current_series = match data_type.name() {
+            "numeric" => {
+            let col_data: Vec<Option<f64>> = numeric_column_to_f64(&rows, idx);      
+            Column::new(col_name.clone(), Series::new(col_name, col_data))
+            }
             // if date, convert to Vec<chrono>
             "date" => {
                 let col_data: Vec<Option<chrono::NaiveDate>> =
@@ -191,22 +198,35 @@ pub async fn get_crsp_data(client: &Client, dir_path: &str, output_format: &str)
     Ok(())
 }
 
+/// Converts a PostgreSQL `numeric` column into a `Vec<Option<f64>>` for compatibility with Polars.
+fn numeric_column_to_f64(rows: &[Row], column_idx: usize) -> Vec<Option<f64>> {
+    rows.iter()
+        .map(|row| {
+            // Attempt to retrieve the value as a `Decimal`
+            let decimal: Option<Decimal> = row.get(column_idx);
+
+            // Convert `Decimal` to `f64`
+            decimal.and_then(|d| d.to_f64())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[tokio::test]
-    async fn test_get_crsp() {
+    async fn test_get_wrds_table() {
         let config = WrdsConfig::from_env();
 
         // Download required tables
         let tables = [
-            ("CRSP", "MSFHDR"), //
-                                // ("CRSP", "MSF"), // Main dataset
-                                // ("CRSP", "MSEDELIST"), // delisting returns
-                                // ("CRSP", "MSEEXCHDATES"),
-                                // ("CRSP", "CCMXPF_LNKHIST"),
-                                // ("CRSP", "STOCKNAMES"),
+            // ("CRSP", "MSFHDR"), //
+            ("CRSP", "MSF"), // Main dataset
+                             // ("CRSP", "MSEDELIST"), // delisting returns
+                             // ("CRSP", "MSEEXCHDATES"),
+                             // ("CRSP", "CCMXPF_LNKHIST"),
+                             // ("CRSP", "STOCKNAMES"),
         ];
 
         let client = establish_connection(&config).await.unwrap();
@@ -230,5 +250,18 @@ mod test {
             let read_df = ParquetReader::new(&mut read_file).finish().unwrap();
             dbg!(&read_df);
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_crsp_data() {
+        let config = WrdsConfig::from_env();
+        let client = establish_connection(&config).await.unwrap();
+
+        // Specify output directory and format
+        let dir_path = "data/crsp";
+        let output_format = "parquet"; // or "csv"
+        get_crsp_data(&client, dir_path, output_format)
+            .await
+            .unwrap();
     }
 }
