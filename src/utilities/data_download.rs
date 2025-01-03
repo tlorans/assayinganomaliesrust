@@ -14,77 +14,76 @@ pub async fn download_crsp_monthly(
     db: &SqliteDB,
     start_date: &str,
     end_date: &str,
-) -> Result<Vec<Row>> {
+) -> Result<DataFrame> {
     let client = establish_connection(config).await?;
     let query = format!(
         "SELECT msf.permno, date_trunc('month', msf.mthcaldt)::date AS date, \
-        msf.mthret AS ret, msf.shrout, msf.mthprc AS altprc, \
-        ssih.primaryexch, ssih.siccd \
-        FROM crsp.msf_v2 AS msf \
-        INNER JOIN crsp.stksecurityinfohist AS ssih \
-        ON msf.permno = ssih.permno AND \
-           ssih.secinfostartdt <= msf.mthcaldt AND \
-           msf.mthcaldt <= ssih.secinfoenddt \
-        WHERE msf.mthcaldt BETWEEN '{}' AND '{}' \
-              AND ssih.sharetype = 'NS' \
-              AND ssih.securitytype = 'EQTY' \
-              AND ssih.securitysubtype = 'COM' \
-              AND ssih.usincflg = 'Y' \
-              AND ssih.issuertype in ('ACOR', 'CORP') \
-              AND ssih.primaryexch in ('N', 'A', 'Q') \
-              AND ssih.conditionaltype in ('RW', 'NW') \
-              AND ssih.tradingstatusflg = 'A'",
+    msf.mthret::double precision AS ret, \
+    msf.shrout::double precision AS shrout, \
+    msf.mthprc::double precision AS altprc, \
+    ssih.primaryexch, ssih.siccd \
+    FROM crsp.msf_v2 AS msf \
+    INNER JOIN crsp.stksecurityinfohist AS ssih \
+    ON msf.permno = ssih.permno AND \
+       ssih.secinfostartdt <= msf.mthcaldt AND \
+       msf.mthcaldt <= ssih.secinfoenddt \
+    WHERE msf.mthcaldt BETWEEN '{}' AND '{}' \
+          AND ssih.sharetype = 'NS' \
+          AND ssih.securitytype = 'EQTY' \
+          AND ssih.securitysubtype = 'COM' \
+          AND ssih.usincflg = 'Y' \
+          AND ssih.issuertype in ('ACOR', 'CORP') \
+          AND ssih.primaryexch in ('N', 'A', 'Q') \
+          AND ssih.conditionaltype in ('RW', 'NW') \
+          AND ssih.tradingstatusflg = 'A'",
         start_date, end_date
     );
     info!("Downloading CRSP monthly data");
     let rows = client.query(query.as_str(), &[]).await?;
     info!("Fetched {} rows from CRSP monthly data", rows.len());
-    Ok(rows)
+    // Ok(rows)
 
-    // // Convert rows to Polars DataFrame
-    // let mut permno: Vec<i32> = Vec::with_capacity(rows.len());
-    // let mut date: Vec<chrono::NaiveDate> = Vec::with_capacity(rows.len());
-    // let mut ret: Vec<f64> = Vec::with_capacity(rows.len());
-    // let mut shrout: Vec<f64> = Vec::with_capacity(rows.len());
-    // let mut altprc: Vec<f64> = Vec::with_capacity(rows.len());
-    // let mut primaryexch: Vec<String> = Vec::with_capacity(rows.len());
-    // let mut siccd: Vec<i32> = Vec::with_capacity(rows.len());
+    let mut permno: Vec<i32> = Vec::with_capacity(rows.len());
+    let mut date: Vec<chrono::NaiveDate> = Vec::with_capacity(rows.len());
+    let mut ret: Vec<Option<f64>> = Vec::with_capacity(rows.len());
+    let mut shrout: Vec<Option<f64>> = Vec::with_capacity(rows.len());
+    let mut altprc: Vec<Option<f64>> = Vec::with_capacity(rows.len());
+    let mut primaryexch: Vec<Option<String>> = Vec::with_capacity(rows.len());
+    let mut siccd: Vec<Option<i32>> = Vec::with_capacity(rows.len());
 
-    // for row in rows {
-    //     permno.push(row.get("permno"));
-    //     let system_time: SystemTime = row.get("date");
-    //     let datetime = chrono::DateTime::<chrono::Utc>::from(system_time);
-    //     date.push(datetime.naive_utc().date());
-    //     ret.push(row.get("ret"));
-    //     shrout.push(row.get("shrout"));
-    //     altprc.push(row.get("altprc"));
-    //     primaryexch.push(row.get("primaryexch"));
-    //     siccd.push(row.get("siccd"));
-    // }
+    for row in rows {
+        permno.push(row.get("permno"));
+        date.push(row.get("date"));
+        ret.push(row.get("ret"));
+        shrout.push(row.get("shrout"));
+        altprc.push(row.get("altprc"));
+        primaryexch.push(row.get("primaryexch"));
+        siccd.push(row.get("siccd"));
+    }
 
-    // let mut df: DataFrame = df![
-    //     "permno" => permno,
-    //     "date" => date,
-    //     "ret" => ret,
-    //     "shrout" => shrout,
-    //     "altprc" => altprc,
-    //     "primaryexch" => primaryexch,
-    //     "siccd" => siccd,
-    // ]?;
+    let mut df: DataFrame = df![
+        "permno" => permno,
+        "date" => date,
+        "ret" => ret,
+        "shrout" => shrout,
+        "altprc" => altprc,
+        "primaryexch" => primaryexch,
+        "siccd" => siccd,
+    ]?;
 
-    // df = df
-    //     .lazy()
-    //     .with_column((col("shrout") * col("altprc")).alias("mktcap"))
-    //     .with_column((col("mktcap") / lit(1_000_000)).alias("mktcap_millions"))
-    //     .with_column(
-    //         when(col("mktcap_millions").eq(lit(0.0)))
-    //             .then(lit(f64::NAN))
-    //             .otherwise(col("mktcap_millions"))
-    //             .alias("mktcap_clean"),
-    //     )
-    //     .collect()?; // Materialize LazyFrame into a DataFrame
+    df = df
+        .lazy()
+        .with_column((col("shrout") * col("altprc")).alias("mktcap"))
+        .with_column((col("mktcap") / lit(1_000_000)).alias("mktcap_millions"))
+        .with_column(
+            when(col("mktcap_millions").eq(lit(0.0)))
+                .then(lit(f64::NAN))
+                .otherwise(col("mktcap_millions"))
+                .alias("mktcap_clean"),
+        )
+        .collect()?; // Materialize LazyFrame into a DataFrame
 
-    // Ok(df)
+    Ok(df)
 }
 
 // // Additional transformations (exchange mapping, industry mapping)
@@ -171,7 +170,7 @@ mod test {
         let db = SqliteDB::new(":memory:").unwrap();
         let start_date = "2020-01-01";
         let end_date = "2020-01-31";
-        let df: Vec<Row> = download_crsp_monthly(&config, &db, start_date, end_date)
+        let df: DataFrame = download_crsp_monthly(&config, &db, start_date, end_date)
             .await
             .unwrap();
         dbg!(&df);
