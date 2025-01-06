@@ -250,7 +250,7 @@ mod test {
         let tables = [
             // ("CRSP", "MSFHDR"), //
             ("CRSP", "MSF"), // Main dataset
-                             // ("CRSP", "MSEDELIST"), // delisting returns
+                             //  ("CRSP", "MSEDELIST"), // delisting returns
                              // ("CRSP", "MSEEXCHDATES"),
                              // ("CRSP", "CCMXPF_LNKHIST"),
                              // ("CRSP", "STOCKNAMES"),
