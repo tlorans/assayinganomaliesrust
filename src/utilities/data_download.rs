@@ -5,13 +5,13 @@ use log::info;
 use native_tls::TlsConnector;
 use polars::prelude::*;
 use postgres_native_tls::MakeTlsConnector;
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::fs::File;
 use tokio_postgres::Client;
-use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use tokio_postgres::Row;
 
 #[derive(Debug)]
@@ -76,7 +76,34 @@ pub async fn establish_connection(config: &WrdsConfig) -> Result<Client> {
 
     Ok(client)
 }
-
+/// Downloads a table from the WRDS PostgreSQL database and saves it to disk in the specified format.
+///
+/// # Arguments
+/// * `client` - A reference to the PostgreSQL client.
+/// * `libname` - WRDS library name (e.g., "CRSP").
+/// * `memname` - WRDS table name (e.g., "MSF").
+/// * `dir_path` - Directory path to save the downloaded table.
+/// * `custom_query` - Optional custom SQL query to execute.
+/// * `output_format` - Output format for the saved table ("csv" or "parquet").
+///
+/// # Returns
+/// * `Result<()>` - Ok if the table was successfully downloaded and saved, or an error.
+///
+/// # Example
+/// ```rust
+/// use anyhow::Result;
+/// use tokio_postgres::Client;
+/// use wrds::utilities::data_download::get_wrds_table;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///    let config = WrdsConfig::from_env();
+///   let client = establish_connection(&config).await?;
+///  get_wrds_table(&client, "CRSP", "MSF", "data/crsp", None, "parquet").await.unwrap();
+/// Ok(())
+/// }
+/// ```
+///
 pub async fn get_wrds_table(
     client: &Client,
     libname: &str,
@@ -111,8 +138,8 @@ pub async fn get_wrds_table(
         let data_type = column.type_();
         let current_series = match data_type.name() {
             "numeric" => {
-            let col_data: Vec<Option<f64>> = numeric_column_to_f64(&rows, idx);      
-            Column::new(col_name.clone(), Series::new(col_name, col_data))
+                let col_data: Vec<Option<f64>> = numeric_column_to_f64(&rows, idx);
+                Column::new(col_name.clone(), Series::new(col_name, col_data))
             }
             // if date, convert to Vec<chrono>
             "date" => {
