@@ -17,7 +17,7 @@ The MSF dataset is the main dataset from the CRSP monthly data. The MSEDELIST da
 
 ### Organize and store
 
-The function `make_crsp_monthly_data()` reads in and stores the raw CRSP data and creates the matrices that we'll use for asset pricing later. Most of our variables of intereset will be stored as matrices with the same dimensions: number of dates (nMonths or nDays) \times number of stocks (nStocks). The dimensions will be determined by the number of unique permnos in the CRSP MSF and dates in the MSF/DSF files after filtering based on sample start and end dates and the flag for domestic common equity. The function creates and stores the dates (nMonths \times 1) and CRSP's permno identifier (nStocks \times 1) vecotrs which contain the unique months and permnos, as well as the following matrices (all nMonths \times nStocks):
+The function `make_crsp_monthly_data()` reads in and stores the raw CRSP data and creates the matrices that we'll use for asset pricing later. Most of our variables of intereset will be stored as matrices with the same dimensions: number of dates (nMonths or nDays) $\times$ number of stocks (nStocks). The dimensions will be determined by the number of unique permnos in the CRSP MSF and dates in the MSF/DSF files after filtering based on sample start and end dates and the flag for domestic common equity. The function creates and stores the dates (nMonths $\times$ 1) and CRSP's permno identifier (nStocks $\times$ 1) vecotrs which contain the unique months and permnos, as well as the following matrices (all nMonths $\times$ nStocks):
 - shrcd: Share Code
 - exchcd: Exchange Code
 - siccd: Standard Industrial Classification Code
