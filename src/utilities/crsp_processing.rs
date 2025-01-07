@@ -3,6 +3,7 @@ use polars::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 
+
 /// Struct representing the configuration parameters
 #[derive(Debug)]
 pub struct Params {
@@ -13,17 +14,45 @@ pub struct Params {
 }
 
 pub fn make_crsp_monthly_data(params: &Params) -> Result<DataFrame> {
+    // Store the CRSP directory path
     let crsp_dir_path = format!("{}/data/crsp", params.directory);
 
-    // file paths for the required parquet files
+    // Read the CRSP monthly stock file
     let crsp_msf_path = format!("{}/crsp_msf.parquet", crsp_dir_path);
-
-    // Read Parquet files into DataFrames
     let mut crsp_msf = ParquetReader::new(std::fs::File::open(crsp_msf_path).unwrap())
         .finish()
         .unwrap();
+    println!(
+        "CRSP_MSF file loaded. It contains {} rows and {} columns.",
+        crsp_msf.height(),
+        crsp_msf.width()
+    );
 
-    Ok(crsp_msf)
+    // Read the CRSP monthly stock file with share code information
+    let crsp_mseexch_path = format!("{}/crsp_mseexchdates.parquet", crsp_dir_path);
+    let mut crsp_mseexchdates = ParquetReader::new(std::fs::File::open(crsp_mseexch_path).unwrap())
+        .finish()
+        .unwrap();
+    println!(
+        "CRSP_MSEEXCHDATES file loaded. It contains {} rows and {} columns.",
+        crsp_mseexchdates.height(),
+        crsp_mseexchdates.width()
+    );
+
+    // Inspect schemas
+    println!("{:?}", crsp_msf.schema());
+    println!("{:?}", crsp_mseexchdates.schema());
+
+
+    // Perform the join as LazyFrame
+    let result = crsp_msf.clone().lazy().join(
+        crsp_mseexchdates.clone().lazy(),
+        [(col("permno"))],
+        [(col("permno"))],
+        JoinArgs::new(JoinType::Left)
+    ).collect()?;
+
+    Ok(result)
 }
 
 #[cfg(test)]
