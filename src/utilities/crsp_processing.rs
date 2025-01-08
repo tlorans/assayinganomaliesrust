@@ -17,7 +17,7 @@ pub struct Params {
     pub dom_com_eq_flag: bool,
 }
 
-pub fn make_crsp_monthly_data(params: &Params) -> Result<DataFrame> {
+pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
     // Store the CRSP directory path
     let crsp_dir_path = format!("{}/data/crsp", params.directory);
 
@@ -32,7 +32,7 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<DataFrame> {
     println!("Loaded CRSP_MSEEXCHDATES as LazyFrame.");
 
     // Perform the join as LazyFrame
-    let result = crsp_msf_lazy
+    let mut result = crsp_msf_lazy
         .join(
             crsp_mseexchdates_lazy,
             [col("permno")], // Left key
@@ -51,6 +51,20 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<DataFrame> {
         )
         .collect()?; // Collect into a DataFrame
 
+    // Check to see if we should only keep share codes 10 and 11 (domestic common equity)
+    if params.dom_com_eq_flag {
+        // Filter the DataFrame to only keep share codes 10 and 11
+        result = result
+            .clone()
+            .lazy()
+            .filter(
+                col("shrcd").eq(lit(10)).or(col("shrcd").eq(lit(11))), // The logic ensures that only rows with share codes 10 and 11 are retained.
+            )
+            .collect()?;
+
+        println!("Filtered out non-domestic common equity.");
+    }
+
     // print the schema
     println!("Schema of the joined DataFrame:");
     println!("{:?}", result.schema());
@@ -58,32 +72,41 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<DataFrame> {
     println!("Join and filtering complete.");
 
     // Save permno and dates vectors
-    let permno = result
+    let permno: Array2<i32> = result
         .clone()
         .lazy()
         .select([col("permno").unique_stable()])
-        .collect()?;
-
-    // transform permno to a Vec<u32> and save it as a parquet file
-    let permno_path = format!("{}/permno.parquet", crsp_dir_path);
-    let permno_u32: ArrayBase<_, Ix2> = permno
-        .to_ndarray::<UInt32Type>(IndexOrder::default())
+        .collect()?
+        .to_ndarray::<Int32Type>(Default::default())
         .unwrap();
 
-    dbg!(permno_u32);
-    let dates = result
+    // Serialize the ndarray to JSON
+    let json = serde_json::to_string(&permno).unwrap();
+    // Write the JSON to a file
+    let mut file = File::create(format!("{}/permno.json", crsp_dir_path)).unwrap();
+    file.write_all(json.as_bytes()).unwrap();
+
+    let dates_col = result
         .clone()
         .lazy()
-        .select([col("date").unique_stable()])
+        .select([col("date").dt().to_string("%Y%m%d").unique_stable()])
         .collect()?;
 
-    // print shape of dates
-    println!("Shape of dates: {:?}", dates.shape());
-    // print the first 5 rows of dates
-    println!("First 5 rows of dates:");
-    println!("{:?}", dates.head(Some(5)));
+    let dates: Array2<i32> = dates_col
+        .clone()
+        .lazy()
+        .select([col("date").cast(DataType::Int32)])
+        .collect()?
+        .to_ndarray::<Int32Type>(Default::default())
+        .unwrap();
 
-    Ok(result)
+    // Serialize the ndarray to JSON
+    let json = serde_json::to_string(&dates).unwrap();
+    // Write the JSON to a file
+    let mut file = File::create(format!("{}/dates.json", crsp_dir_path)).unwrap();
+    file.write_all(json.as_bytes()).unwrap();
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -99,8 +122,26 @@ mod tests {
             dom_com_eq_flag: true,
         };
 
-        let crsp_msf = make_crsp_monthly_data(&params).unwrap();
-        dbg!(crsp_msf);
+        make_crsp_monthly_data(&params).unwrap();
+        // Read the JSON from the file
+        let crsp_dir_path = format!("{}/data/crsp", params.directory);
+        let mut file = File::open(format!("{}/permno.json", crsp_dir_path)).unwrap();
+        let mut json = String::new();
+        file.read_to_string(&mut json).unwrap();
+        // Deserialize the JSON into an ndarray
+        let deserialized_array: Array2<i32> = serde_json::from_str(&json).unwrap();
+
+        dbg!(deserialized_array);
+
+        // Read the dates JSON from the file
+        let mut file = File::open(format!("{}/dates.json", crsp_dir_path)).unwrap();
+        let mut json = String::new();
+        file.read_to_string(&mut json).unwrap();
+        // Deserialize the JSON into an ndarray
+        let deserialized_array: Array2<i32> = serde_json::from_str(&json).unwrap();
+
+        // Check that the original and deserialized arrays are equal
+        dbg!(deserialized_array);
     }
 
     #[test]
@@ -126,5 +167,44 @@ mod tests {
 
         // Check that the original and deserialized arrays are equal
         dbg!(deserialized_array);
+    }
+
+    #[test]
+    fn test_date_to_timestamp() {
+        // Create a DataFrame with a NaiveDate column
+        let df = df![
+            "date" => vec![
+                NaiveDate::from_ymd_opt(2021, 1, 1),
+                NaiveDate::from_ymd_opt(2021, 1, 2),
+                NaiveDate::from_ymd_opt(2021, 1, 3),
+            ]
+        ]
+        .unwrap();
+
+        // Convert the NaiveDate column to a Timestamp column
+        // Example NaiveDate
+        let date = NaiveDate::from_ymd_opt(2020, 10, 12).unwrap();
+
+        // Convert to numeric format YYYYMMDD
+        let numeric_date = date.format("%Y%m%d").to_string().parse::<i32>().unwrap();
+
+        println!("Numeric date: {}", numeric_date);
+
+        // Convert the NaiveDate column to numeric format (YYYYMMDD)
+        let df_string = df
+            .clone()
+            .lazy()
+            .select([col("date").dt().to_string("%Y%m%d")])
+            .collect()
+            .unwrap();
+
+        let df_numeric = df_string
+            .clone()
+            .lazy()
+            .select([col("date").cast(DataType::Int32)])
+            .collect()
+            .unwrap();
+
+        println!("{:?}", df_numeric)
     }
 }
