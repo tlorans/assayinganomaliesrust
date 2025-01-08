@@ -176,6 +176,7 @@ dependencies = [
  "native-tls",
  "ndarray",
  "polars",
+ "polars-ops",
  "postgres-native-tls",
  "rusqlite",
  "rust_decimal",

@@ -1,13 +1,17 @@
 use anyhow::Result;
-use chrono::NaiveDate; // Use chrono for date handling
+use chrono::NaiveDate;
+use pivot::pivot;
+// Use chrono for date handling
 use polars::prelude::*;
 use std::fs;
 use std::ops::BitAnd; // Required for custom logical AND
                       // ndarrays
 use ndarray::Array2;
 use ndarray::{ArrayBase, Ix2}; // Import dimensionality types
+use polars_ops::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
+
 /// Struct representing the configuration parameters
 #[derive(Debug)]
 pub struct Params {
@@ -106,6 +110,90 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
     let mut file = File::create(format!("{}/dates.json", crsp_dir_path)).unwrap();
     file.write_all(json.as_bytes()).unwrap();
 
+    // List of variables to extract
+    let var_names = vec![
+        "shrcd", "exchcd", "siccd", "prc", "bid", "ask", "bidlo", "askhi",
+        // "vol_x_adj",
+        // "ret_x_dl",
+        "shrout", "cfacpr", "cfacshr", "spread", "retx",
+    ];
+
+    // Iterate through the variable names
+    for (i, var_name) in var_names.iter().enumerate() {
+        println!(
+            "Now working on variable {} ({} out of {}).",
+            var_name,
+            i + 1,
+            var_names.len()
+        );
+
+        // Select relevant columns (permno, dates, variable)
+        let temp_df = result
+            .clone()
+            .lazy()
+            .select([col("permno"), col("date"), col(var_name.to_string())])
+            .collect()?;
+
+        // Check the data type of the current column
+        let column_type = temp_df.schema().get_field(var_name).unwrap();
+
+        // Pivot the DataFrame to create a matrix (permno as rows, dates as columns)
+        let mut matrix_df = pivot(
+            &temp_df,
+            ["date"],
+            Some(["permno"]),
+            Some([var_name.to_string()]),
+            false,
+            None,
+            None,
+        )?
+        .fill_null(FillNullStrategy::Zero)?;
+
+        // Drop permno column
+        matrix_df.drop_in_place("permno")?;
+
+        match column_type.dtype {
+            DataType::Int16 => {
+                let ndarray: Array2<i16> = matrix_df.to_ndarray::<Int16Type>(Default::default())?;
+                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
+            }
+            DataType::Int32 => {
+                let ndarray: Array2<i32> = matrix_df.to_ndarray::<Int32Type>(Default::default())?;
+                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
+            }
+            DataType::Int64 => {
+                let ndarray: Array2<i64> = matrix_df.to_ndarray::<Int64Type>(Default::default())?;
+                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
+            }
+            DataType::Float32 => {
+                let ndarray: Array2<f32> =
+                    matrix_df.to_ndarray::<Float32Type>(Default::default())?;
+                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
+            }
+            DataType::Float64 => {
+                let ndarray: Array2<f64> =
+                    matrix_df.to_ndarray::<Float64Type>(Default::default())?;
+                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
+            }
+            _ => {
+                println!("Unsupported data type.");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn save_ndarray_as_json<T: serde::Serialize>(
+    ndarray: Array2<T>,
+    crsp_dir_path: &str,
+    var_name: &str,
+) -> Result<()> {
+    let json = serde_json::to_string(&ndarray)?;
+    let file_path = format!("{}/{}.json", crsp_dir_path, var_name);
+    let mut file = File::create(file_path)?;
+    file.write_all(json.as_bytes())?;
+    println!("Saved matrix for {}.", var_name);
     Ok(())
 }
 
@@ -125,22 +213,12 @@ mod tests {
         make_crsp_monthly_data(&params).unwrap();
         // Read the JSON from the file
         let crsp_dir_path = format!("{}/data/crsp", params.directory);
-        let mut file = File::open(format!("{}/permno.json", crsp_dir_path)).unwrap();
+        let mut file = File::open(format!("{}/shrcd.json", crsp_dir_path)).unwrap();
         let mut json = String::new();
         file.read_to_string(&mut json).unwrap();
         // Deserialize the JSON into an ndarray
-        let deserialized_array: Array2<i32> = serde_json::from_str(&json).unwrap();
+        let deserialized_array: Array2<i16> = serde_json::from_str(&json).unwrap();
 
-        dbg!(deserialized_array);
-
-        // Read the dates JSON from the file
-        let mut file = File::open(format!("{}/dates.json", crsp_dir_path)).unwrap();
-        let mut json = String::new();
-        file.read_to_string(&mut json).unwrap();
-        // Deserialize the JSON into an ndarray
-        let deserialized_array: Array2<i32> = serde_json::from_str(&json).unwrap();
-
-        // Check that the original and deserialized arrays are equal
         dbg!(deserialized_array);
     }
 

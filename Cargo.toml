@@ -19,7 +19,9 @@ polars = { version = "0.45.1", features = [
     'parquet',
     'dtype-i16',
     'ndarray',
+    'pivot',
 ] }
+polars-ops = "0.45.1"
 postgres-native-tls = "0.5.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 rust_decimal = { version = "1.36.0", features = ["db-postgres"] }
