@@ -10,13 +10,13 @@ pub fn make_crsp_derived_variables(params: &Params) -> Result<()> {
     let crsp_dir_path = Path::new(&params.directory).join("data/crsp");
 
     // Load data
-    let ret_x_dl: Array2<f64> = load_data(&crsp_dir_path, "ret_x_dl.json")?;
-    let permno: Array2<i32> = load_data(&crsp_dir_path, "permno.json")?;
-    let date: Array2<i32> = load_data(&crsp_dir_path, "date.json")?;
+    let ret_x_dl: Array2<f64> = load_array(&crsp_dir_path, "ret_x_dl.json")?;
+    let permno: Array2<i32> = load_array(&crsp_dir_path, "permno.json")?;
+    let date: Array2<i32> = load_array(&crsp_dir_path, "date.json")?;
     Ok(())
 }
 
-fn load_data<T>(crsp_path: &Path, file_name: &str) -> Result<Array2<T>>
+fn load_array<T>(crsp_path: &Path, file_name: &str) -> Result<Array2<T>>
 where
     T: DeserializeOwned + std::fmt::Debug,
 {
