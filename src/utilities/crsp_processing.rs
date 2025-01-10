@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use pivot::pivot;
 // Use chrono for date handling
@@ -6,11 +6,11 @@ use polars::prelude::*;
 use std::fs;
 use std::ops::BitAnd; // Required for custom logical AND
                       // ndarrays
-use ndarray::Array2;
+use ndarray::{Array2, Data};
 use ndarray::{ArrayBase, Ix2}; // Import dimensionality types
-use polars_ops::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::path::Path;
 
 /// Struct representing the configuration parameters
 #[derive(Debug)]
@@ -23,17 +23,11 @@ pub struct Params {
 
 pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
     // Store the CRSP directory path
-    let crsp_dir_path = format!("{}/data/crsp", params.directory);
+    let crsp_dir_path = Path::new(&params.directory).join("data/crsp");
 
     // Read the CRSP monthly stock file as LazyFrame
-    let crsp_msf_path = format!("{}/crsp_msf.parquet", crsp_dir_path);
-    let crsp_msf_lazy = LazyFrame::scan_parquet(&crsp_msf_path, Default::default())?;
-    println!("Loaded CRSP_MSF as LazyFrame.");
-
-    // Read the CRSP monthly stock file with share code information as LazyFrame
-    let crsp_mseexch_path = format!("{}/crsp_mseexchdates.parquet", crsp_dir_path);
-    let crsp_mseexchdates_lazy = LazyFrame::scan_parquet(&crsp_mseexch_path, Default::default())?;
-    println!("Loaded CRSP_MSEEXCHDATES as LazyFrame.");
+    let crsp_msf_lazy = load_parquet(&crsp_dir_path.join("crsp_msf.parquet"))?;
+    let crsp_mseexchdates_lazy = load_parquet(&crsp_dir_path.join("crsp_mseexchdates.parquet"))?;
 
     // Perform the join as LazyFrame
     let mut result = crsp_msf_lazy
@@ -53,7 +47,8 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
                 .gt_eq(lit(params.sample_start))
                 .and(col("date").lt_eq(lit(params.sample_end))), // The logic ensures that only rows where date is within the sample range are retained.
         )
-        .collect()?; // Collect into a DataFrame
+        .collect()
+        .context("Failed to join and filter the CRSP data.")?;
 
     // Check to see if we should only keep share codes 10 and 11 (domestic common equity)
     if params.dom_com_eq_flag {
@@ -64,51 +59,17 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
             .filter(
                 col("shrcd").eq(lit(10)).or(col("shrcd").eq(lit(11))), // The logic ensures that only rows with share codes 10 and 11 are retained.
             )
-            .collect()?;
+            .collect()
+            .context("Failed to filter out non-domestic common equity.")?;
 
         println!("Filtered out non-domestic common equity.");
     }
 
-    // print the schema
-    println!("Schema of the joined DataFrame:");
-    println!("{:?}", result.schema());
+    println!("Schema of the filtered DataFrame:\n{:?}", result.schema());
 
-    println!("Join and filtering complete.");
-
-    // Save permno and dates vectors
-    let permno: Array2<i32> = result
-        .clone()
-        .lazy()
-        .select([col("permno").unique_stable()])
-        .collect()?
-        .to_ndarray::<Int32Type>(Default::default())
-        .unwrap();
-
-    // Serialize the ndarray to JSON
-    let json = serde_json::to_string(&permno).unwrap();
-    // Write the JSON to a file
-    let mut file = File::create(format!("{}/permno.json", crsp_dir_path)).unwrap();
-    file.write_all(json.as_bytes()).unwrap();
-
-    let dates_col = result
-        .clone()
-        .lazy()
-        .select([col("date").dt().to_string("%Y%m%d").unique_stable()])
-        .collect()?;
-
-    let dates: Array2<i32> = dates_col
-        .clone()
-        .lazy()
-        .select([col("date").cast(DataType::Int32)])
-        .collect()?
-        .to_ndarray::<Int32Type>(Default::default())
-        .unwrap();
-
-    // Serialize the ndarray to JSON
-    let json = serde_json::to_string(&dates).unwrap();
-    // Write the JSON to a file
-    let mut file = File::create(format!("{}/dates.json", crsp_dir_path)).unwrap();
-    file.write_all(json.as_bytes()).unwrap();
+    // Save permno and dates as JSON
+    save_unique_column(&result, "permno", &crsp_dir_path, "permno.json")?;
+    save_unique_dates(&result, "date", &crsp_dir_path, "dates.json")?;
 
     // List of variables to extract
     let var_names = vec![
@@ -127,79 +88,100 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
             var_names.len()
         );
 
-        // Select relevant columns (permno, dates, variable)
-        let temp_df = result
-            .clone()
-            .lazy()
-            .select([col("permno"), col("date"), col(var_name.to_string())])
-            .collect()?;
-
-        // Check the data type of the current column
-        let column_type = temp_df.schema().get_field(var_name).unwrap();
-
-        // Pivot the DataFrame to create a matrix (permno as rows, dates as columns)
-        let mut matrix_df = pivot(
-            &temp_df,
-            ["date"],
-            Some(["permno"]),
-            Some([var_name.to_string()]),
-            false,
-            None,
-            None,
-        )?
-        .fill_null(FillNullStrategy::Zero)?;
-
-        // Drop permno column
-        matrix_df.drop_in_place("permno")?;
-
-        match column_type.dtype {
-            DataType::Int16 => {
-                let ndarray: Array2<i16> = matrix_df.to_ndarray::<Int16Type>(Default::default())?;
-                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
-            }
-            DataType::Int32 => {
-                let ndarray: Array2<i32> = matrix_df.to_ndarray::<Int32Type>(Default::default())?;
-                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
-            }
-            DataType::Int64 => {
-                let ndarray: Array2<i64> = matrix_df.to_ndarray::<Int64Type>(Default::default())?;
-                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
-            }
-            DataType::Float32 => {
-                let ndarray: Array2<f32> =
-                    matrix_df.to_ndarray::<Float32Type>(Default::default())?;
-                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
-            }
-            DataType::Float64 => {
-                let ndarray: Array2<f64> =
-                    matrix_df.to_ndarray::<Float64Type>(Default::default())?;
-                save_ndarray_as_json(ndarray, &crsp_dir_path, var_name)?;
-            }
-            _ => {
-                println!("Unsupported data type.");
-            }
-        }
+        process_variable(&result, var_name, Path::new(&crsp_dir_path))?;
     }
 
     Ok(())
 }
 
+fn load_parquet(path: &Path) -> Result<LazyFrame> {
+    LazyFrame::scan_parquet(path, Default::default())
+        .with_context(|| format!("Failed to load parquet file: {:?}", path))
+}
+
+fn save_unique_column(df: &DataFrame, column: &str, dir: &Path, filename: &str) -> Result<()> {
+    let unique_values = df
+        .clone()
+        .lazy()
+        .select([col(column).unique_stable()])
+        .collect()?
+        .to_ndarray::<Int32Type>(Default::default())?;
+    save_ndarray_as_json(unique_values, dir, filename)
+}
+
+fn save_unique_dates(df: &DataFrame, column: &str, dir: &Path, filename: &str) -> Result<()> {
+    let dates_col = df
+        .clone()
+        .lazy()
+        .select([col(column).dt().to_string("%Y%m%d").unique_stable()])
+        .collect()?;
+    let dates = dates_col
+        .lazy()
+        .select([col(column).cast(DataType::Int32)])
+        .collect()?
+        .to_ndarray::<Int32Type>(Default::default())?;
+    save_ndarray_as_json(dates, dir, filename)
+}
+
+fn process_variable(df: &DataFrame, var_name: &str, dir: &Path) -> Result<()> {
+    let temp_df = df
+        .clone()
+        .lazy()
+        .select([col("permno"), col("date"), col(var_name)])
+        .collect()?;
+
+    let column_type = temp_df.schema().get_field(var_name).unwrap();
+
+    let mut pivoted_df = pivot(
+        &temp_df,
+        ["date"],
+        Some(["permno"]),
+        Some([var_name]),
+        false,
+        None,
+        None,
+    )?
+    .fill_null(FillNullStrategy::Zero)?;
+
+    pivoted_df.drop_in_place("permno")?;
+
+    match column_type.dtype {
+        DataType::Int16 => save_ndarray::<Int16Type>(&pivoted_df, dir, var_name),
+        DataType::Int32 => save_ndarray::<Int32Type>(&pivoted_df, dir, var_name),
+        DataType::Int64 => save_ndarray::<Int64Type>(&pivoted_df, dir, var_name),
+        DataType::Float32 => save_ndarray::<Float32Type>(&pivoted_df, dir, var_name),
+        DataType::Float64 => save_ndarray::<Float64Type>(&pivoted_df, dir, var_name),
+        _ => Err(anyhow::anyhow!("Unsupported data type for {}", var_name)),
+    }
+}
+
+fn save_ndarray<T: PolarsNumericType>(df: &DataFrame, dir: &Path, var_name: &str) -> Result<()>
+where
+    T: PolarsNumericType,
+    T::Native: serde::Serialize,
+{
+    let ndarray = df.to_ndarray::<T>(Default::default())?;
+    save_ndarray_as_json(ndarray, dir, &format!("{}.json", var_name))
+}
+
 fn save_ndarray_as_json<T: serde::Serialize>(
     ndarray: Array2<T>,
-    crsp_dir_path: &str,
-    var_name: &str,
+    dir: &Path,
+    filename: &str,
 ) -> Result<()> {
     let json = serde_json::to_string(&ndarray)?;
-    let file_path = format!("{}/{}.json", crsp_dir_path, var_name);
-    let mut file = File::create(file_path)?;
-    file.write_all(json.as_bytes())?;
-    println!("Saved matrix for {}.", var_name);
+    let file_path = dir.join(filename);
+    File::create(&file_path)
+        .and_then(|mut file| file.write_all(json.as_bytes()))
+        .with_context(|| format!("Failed to write ndarray to file: {:?}", file_path))?;
+    println!("Saved matrix for {}.", filename);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_make_crsp_monthly_data() {
