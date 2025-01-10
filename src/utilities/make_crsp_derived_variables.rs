@@ -43,7 +43,7 @@ mod test {
         };
         let crsp_dir_path = Path::new(&params.directory).join("data/crsp");
 
-        let ret_x_dl: Array2<f64> = load_data(&crsp_dir_path, "ret_x_dl.json").unwrap();
+        let ret_x_dl: Array2<f64> = load_array(&crsp_dir_path, "ret_x_dl.json").unwrap();
 
         dbg!(ret_x_dl);
     }
