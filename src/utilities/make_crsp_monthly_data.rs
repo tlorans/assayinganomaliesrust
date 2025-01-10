@@ -127,7 +127,7 @@ fn save_link_file(dataframe: &DataFrame, path: &Path) -> Result<()> {
         .lazy()
         .select([
             col("permno"),
-            col("date").dt().to_string("%Y%m%d").cast(DataType::Int32),
+            col("date").dt().to_string("%Y%m").cast(DataType::Int32),
         ])
         .collect()?;
 
@@ -154,7 +154,7 @@ fn save_unique_dates(df: &DataFrame, column: &str, dir: &Path, filename: &str) -
     let dates_col = df
         .clone()
         .lazy()
-        .select([col(column).dt().to_string("%Y%m%d").unique_stable()])
+        .select([col(column).dt().to_string("%Y%m").unique_stable()])
         .collect()?;
     let dates = dates_col
         .lazy()
