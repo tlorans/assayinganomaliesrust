@@ -71,6 +71,9 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
     save_unique_column(&result, "permno", &crsp_dir_path, "permno.json")?;
     save_unique_dates(&result, "date", &crsp_dir_path, "dates.json")?;
 
+    // Save the link file for the COMPUSTAT matrices creation
+    save_link_file(&result, &crsp_dir_path)?;
+
     // Rename returns to indicate they are without delisting adjustment
     // Rename volume to indicate it is without adjustment for NASDAQ
     let lazy_df = result.lazy();
@@ -116,6 +119,20 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn save_link_file(dataframe: &DataFrame, path: &Path) -> Result<()> {
+    let link = dataframe
+        .clone()
+        .lazy()
+        .select([
+            col("permno"),
+            col("date").dt().to_string("%Y%m%d").cast(DataType::Int32),
+        ])
+        .collect()?;
+
+    let link_array = link.to_ndarray::<Int32Type>(Default::default())?;
+    save_ndarray_as_json(link_array, path, "crsp_link.json")
 }
 
 fn load_parquet(path: &Path) -> Result<LazyFrame> {

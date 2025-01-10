@@ -33,3 +33,16 @@ The function `make_crsp_monthly_data()` reads in and stores the raw CRSP data an
 - cfashr: cumulative factor to adjust shares outstanding
 - spread: realized closing bid-ask spread
 - retx: holding period return without dividends and without adjusting for delisting returns
+
+### Make derived variables
+
+The next stage use the fucnction`make_CRSP_derived_variables()` which creates variables that are derived from the raw CRSP variables and stored in the `/data/` subfolder in the same diretory. These include:
+- Return adjusted for delisting : ret (nMonths $\times$ nStocks). The delisting adjustment just adds the delisting return for each permno in the month following the last month with return data. The resulting return matrix, ret has dimensions nMonths $\times$ nStocks and is the main matrix used for asset pricing research
+- Market capitalisation matrix: me (nMonth $\times$ nStocks).
+- NYSE indicator matrix - NYSE (nMonth $\times$ nStocks).
+- Fama-French factors: - the `make_CRSP_derived_variables()` function call the function `get_FFF_factors()` which downloads the Fama-French factors, reshapes them as vectors with the same size as our dates vector (nMonths $\times$ 1) and stores them in the `/data/` subfolder.
+- Industry classification - the `make_CRSP_derived_variables()` calls another function `make_industry_classifications()` which creates indicator matrices (nMonths $\times$ nStocks) for the SIC industrial classification and Fama-French 10, 17 and 49 industry classifications. 
+- Industry returns: - the `make_CRSP_derived_variables()` calls another function `make_industry_returns()` which creates industry returns (nMonths $\times$ nIndustries) for the Fama-French 10, 17 and 49 industry classifications.
+- Universes: - the `make_CRSP_derived_variables()` calls another function `make_universes()` which creates a structure with several stock universe designations.
+- Share issuance variables - ashrout and dashrout 
+- Past performance variables: - the `make_CRSP_derived_variables()` calls another function `make_past_performance_variables()` which creates past performance variables (ie. momentum and reversal) variables - R (classifc 12-1 momentum), R62 (recent 6-1 momentum), R127 (intermediate horizon 12-6 momentum), R3613 (long-run reversals).
