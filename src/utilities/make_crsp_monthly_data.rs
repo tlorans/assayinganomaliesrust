@@ -135,7 +135,7 @@ fn save_link_file(dataframe: &DataFrame, path: &Path) -> Result<()> {
     save_ndarray_as_json(link_array, path, "crsp_link.json")
 }
 
-fn load_parquet(path: &Path) -> Result<LazyFrame> {
+pub fn load_parquet(path: &Path) -> Result<LazyFrame> {
     LazyFrame::scan_parquet(path, Default::default())
         .with_context(|| format!("Failed to load parquet file: {:?}", path))
 }
