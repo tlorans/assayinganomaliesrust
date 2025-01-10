@@ -36,7 +36,7 @@ The function `make_crsp_monthly_data()` reads in and stores the raw CRSP data an
 
 ### Make derived variables
 
-The next stage use the fucnction`make_CRSP_derived_variables()` which creates variables that are derived from the raw CRSP variables and stored in the `/data/` subfolder in the same diretory. These include:
+The next stage use the fucnction `make_CRSP_derived_variables()` which creates variables that are derived from the raw CRSP variables and stored in the `/data/` subfolder in the same diretory. These include:
 - Return adjusted for delisting : ret (nMonths $\times$ nStocks). The delisting adjustment just adds the delisting return for each permno in the month following the last month with return data. The resulting return matrix, ret has dimensions nMonths $\times$ nStocks and is the main matrix used for asset pricing research
 - Market capitalisation matrix: me (nMonth $\times$ nStocks).
 - NYSE indicator matrix - NYSE (nMonth $\times$ nStocks).
