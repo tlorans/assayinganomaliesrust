@@ -71,12 +71,36 @@ pub fn make_crsp_monthly_data(params: &Params) -> Result<()> {
     save_unique_column(&result, "permno", &crsp_dir_path, "permno.json")?;
     save_unique_dates(&result, "date", &crsp_dir_path, "dates.json")?;
 
+    // Rename returns to indicate they are without delisting adjustment
+    // Rename volume to indicate it is without adjustment for NASDAQ
+    let lazy_df = result.lazy();
+
+    // Specify the existing and new column names
+    let existing_names = ["ret", "vol"];
+    let new_names = ["ret_x_dl", "vol_x_adj"];
+    // Rename the columns
+    let result = lazy_df
+        .rename(existing_names, new_names, true)
+        .collect()
+        .unwrap();
+
     // List of variables to extract
     let var_names = vec![
-        "shrcd", "exchcd", "siccd", "prc", "bid", "ask", "bidlo", "askhi",
-        // "vol_x_adj",
-        // "ret_x_dl",
-        "shrout", "cfacpr", "cfacshr", "spread", "retx",
+        "shrcd",
+        "exchcd",
+        "siccd",
+        "prc",
+        "bid",
+        "ask",
+        "bidlo",
+        "askhi",
+        "vol_x_adj",
+        "ret_x_dl",
+        "shrout",
+        "cfacpr",
+        "cfacshr",
+        "spread",
+        "retx",
     ];
 
     // Iterate through the variable names
@@ -124,6 +148,7 @@ fn save_unique_dates(df: &DataFrame, column: &str, dir: &Path, filename: &str) -
 }
 
 fn process_variable(df: &DataFrame, var_name: &str, dir: &Path) -> Result<()> {
+    // to dimension nMonths x nPermno
     let temp_df = df
         .clone()
         .lazy()
@@ -134,8 +159,8 @@ fn process_variable(df: &DataFrame, var_name: &str, dir: &Path) -> Result<()> {
 
     let mut pivoted_df = pivot(
         &temp_df,
-        ["date"],
-        Some(["permno"]),
+        ["permno"],
+        Some(["date"]),
         Some([var_name]),
         false,
         None,
@@ -143,7 +168,7 @@ fn process_variable(df: &DataFrame, var_name: &str, dir: &Path) -> Result<()> {
     )?
     .fill_null(FillNullStrategy::Zero)?;
 
-    pivoted_df.drop_in_place("permno")?;
+    pivoted_df.drop_in_place("date")?;
 
     match column_type.dtype {
         DataType::Int16 => save_ndarray::<Int16Type>(&pivoted_df, dir, var_name),
@@ -181,7 +206,33 @@ fn save_ndarray_as_json<T: serde::Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+
+    #[test]
+    fn test_rename_column() {
+        // Create a sample DataFrame
+        let df = df![
+            "foo" => [1, 2, 3],
+            "bar" => [6, 7, 8],
+            "ham" => ["a", "b", "c"]
+        ]
+        .unwrap();
+
+        // Convert the DataFrame to a LazyFrame
+        let lazy_df = df.lazy();
+
+        // Specify the existing and new column names
+        let existing_names = ["bar"];
+        let new_names = ["banana"];
+
+        // Rename the columns
+        let renamed_df = lazy_df
+            .rename(existing_names, new_names, true)
+            .collect()
+            .unwrap();
+
+        // Print the renamed DataFrame
+        println!("{:?}", renamed_df);
+    }
 
     #[test]
     fn test_make_crsp_monthly_data() {
