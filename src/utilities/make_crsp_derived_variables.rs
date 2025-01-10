@@ -12,7 +12,7 @@ pub fn make_crsp_derived_variables(params: &Params) -> Result<()> {
     // Load data
     let ret_x_dl: Array2<f64> = load_array(&crsp_dir_path, "ret_x_dl.json")?;
     let permno: Array2<i32> = load_array(&crsp_dir_path, "permno.json")?;
-    let date: Array2<i32> = load_array(&crsp_dir_path, "date.json")?;
+    let date: Array2<i32> = load_array(&crsp_dir_path, "dates.json")?;
     Ok(())
 }
 
