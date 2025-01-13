@@ -12,20 +12,25 @@ pub fn make_crsp_derived_variables(params: &Params) -> Result<()> {
     let crsp_dir_path = Path::new(&params.directory).join("data/crsp");
 
     // Load data
-    let ret_x_dl: Array2<f64> = load_array(&crsp_dir_path, "ret_x_dl.json")?;
+    let mut ret_x_dl: Array2<f64> = load_array(&crsp_dir_path, "ret_x_dl.json")?;
     let permno: Array2<i32> = load_array(&crsp_dir_path, "permno.json")?;
     let date: Array2<i32> = load_array(&crsp_dir_path, "dates.json")?;
 
     // Read the CRSP delist returns file
-    let crsp_msedelist: LazyFrame = load_parquet(&crsp_dir_path.join("crsp_msedelist.parquet"))?;
+    let mut crsp_msedelist: LazyFrame =
+        load_parquet(&crsp_dir_path.join("crsp_msedelist.parquet"))?;
 
     // Filter delisting data
-    let filtered_delist_df = filter_delisting_data(crsp_msedelist, &permno);
-    dbg!(filtered_delist_df);
+    let crsp_msedelist = filter_delisting_data(crsp_msedelist, &permno, &date)?;
+    dbg!(crsp_msedelist);
     Ok(())
 }
 
-fn filter_delisting_data(crsp_msedelist: LazyFrame, permno: &Array2<i32>) -> Result<DataFrame> {
+fn filter_delisting_data(
+    crsp_msedelist: LazyFrame,
+    permno: &Array2<i32>,
+    date: &Array2<i32>,
+) -> Result<DataFrame> {
     // Convert permno to a Vec for filtering
     let permno_vec: Vec<i32> = permno.iter().copied().collect();
 
@@ -33,13 +38,20 @@ fn filter_delisting_data(crsp_msedelist: LazyFrame, permno: &Array2<i32>) -> Res
     let permno_series = Series::new("permno".into(), permno_vec);
     // Apply filtering to LazyFrame
     let filtered = crsp_msedelist
+        .lazy()
+        .clone()
         .filter(
             cols(["permno"])
                 .is_in(lit(permno_series))
                 .and(col("dlstdt").neq(col("dlstdt").max())),
         )
-        .collect()
-        .unwrap();
+        .with_columns([col("dlstdt")
+            .dt()
+            .to_string("%Y%m")
+            .cast(DataType::Int32)
+            .alias("date")])
+        .filter(cols(["date"]).lt(lit(date.iter().cloned().max().unwrap())))
+        .collect()?;
 
     Ok(filtered)
 }
